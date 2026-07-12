@@ -56,13 +56,13 @@ Server runs at **http://localhost:6000**
 
 ### REST
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/users` | Create a user |
-| `GET` | `/users` | Get all users |
-| `GET` | `/users/:id` | Get user by ID |
-| `POST` | `/cqrs/posts` | Create post via CQRS command |
-| `GET` | `/search?q=term` | Full-text search posts |
+| Method | Endpoint         | Description                  |
+| ------ | ---------------- | ---------------------------- |
+| `POST` | `/users`         | Create a user                |
+| `GET`  | `/users`         | Get all users                |
+| `GET`  | `/users/:id`     | Get user by ID               |
+| `POST` | `/cqrs/posts`    | Create post via CQRS command |
+| `GET`  | `/search?q=term` | Full-text search posts       |
 
 ### GraphQL
 
@@ -101,16 +101,16 @@ NODE_ENV=development
 
 ## NestJS Concepts Demonstrated
 
-| Concept | Where |
-|---------|-------|
-| Dependency Injection | All services & modules |
-| Modular Architecture | `*.module.ts` files |
-| Guards & Interceptors | NestJS global pipes |
-| Pipes & Validation | `class-validator` DTOs |
-| Exception Filters | Built-in HTTP exceptions |
-| CQRS Commands | `src/cqrs/commands/` |
-| GraphQL Resolvers | `src/graphql/resolvers/` |
-| Prisma Integration | `src/prisma/` |
+| Concept               | Where                    |
+| --------------------- | ------------------------ |
+| Dependency Injection  | All services & modules   |
+| Modular Architecture  | `*.module.ts` files      |
+| Guards & Interceptors | NestJS global pipes      |
+| Pipes & Validation    | `class-validator` DTOs   |
+| Exception Filters     | Built-in HTTP exceptions |
+| CQRS Commands         | `src/cqrs/commands/`     |
+| GraphQL Resolvers     | `src/graphql/resolvers/` |
+| Prisma Integration    | `src/prisma/`            |
 
 ## Frontend Test Dashboard
 
