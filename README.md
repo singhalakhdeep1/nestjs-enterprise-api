@@ -121,3 +121,9 @@ npm run dev   # http://localhost:3103
 ```
 
 Tests: User CRUD, CQRS post creation, search, and GraphQL playground.
+
+---
+
+## 📝 License
+
+Proprietary - All rights reserved.
