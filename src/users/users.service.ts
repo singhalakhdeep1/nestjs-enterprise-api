@@ -16,11 +16,32 @@ export class UsersService {
         return this.prisma.user.create({ data: createUserDto });
     }
 
-    async findAll() {
-        return this.prisma.user.findMany({
-            include: { posts: true },
-            orderBy: { createdAt: 'desc' },
+    async findByEmail(email: string) {
+        return this.prisma.user.findUnique({
+            where: { email },
         });
+    }
+
+    async findAll(page: number = 1, limit: number = 10) {
+        const skip = (page - 1) * limit;
+        const [users, total] = await Promise.all([
+            this.prisma.user.findMany({
+                skip,
+                take: limit,
+                include: { posts: true },
+                orderBy: { createdAt: 'desc' },
+            }),
+            this.prisma.user.count(),
+        ]);
+        return {
+            data: users,
+            meta: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit),
+            },
+        };
     }
 
     async findOne(id: string) {

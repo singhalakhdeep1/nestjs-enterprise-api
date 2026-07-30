@@ -114,13 +114,46 @@ NODE_ENV=development
 
 ## Frontend Test Dashboard
 
+A modern Next.js test dashboard with TypeScript and Tailwind CSS for testing the API.
+
 ```bash
 cd frontend-test
 npm install
 npm run dev   # http://localhost:3103
 ```
 
-Tests: User CRUD, CQRS post creation, search, and GraphQL playground.
+### Frontend Features
+
+- **TypeScript** - Full type safety across the application
+- **Tailwind CSS** - Modern, responsive UI design
+- **Type-Safe API Client** - Custom client with error handling
+- **User CRUD Testing** - Create and fetch users via Prisma
+- **CQRS Pattern Testing** - Create posts using command pattern
+- **Full-Text Search** - Search posts with the search endpoint
+- **GraphQL Integration** - Direct link to GraphQL Playground
+- **Error Handling** - User-friendly error messages and loading states
+
+### Frontend Setup
+
+1. Install dependencies:
+```bash
+cd frontend-test
+npm install
+```
+
+2. Configure environment (optional):
+```bash
+cp .env.example .env.local
+```
+
+3. Start development server:
+```bash
+npm run dev
+```
+
+The frontend will be available at **http://localhost:3103**
+
+See [frontend-test/README.md](frontend-test/README.md) for detailed frontend documentation.
 
 ---
 
