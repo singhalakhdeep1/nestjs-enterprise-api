@@ -1,162 +1,167 @@
 # NestJS Enterprise API
 
-Enterprise-grade REST + GraphQL API built with NestJS, TypeScript, Prisma ORM, CQRS pattern, and full-text search.
+A NestJS 11 API serving one domain (users, posts, comments, tags) over REST, GraphQL, gRPC and WebSockets. Writes go through CQRS commands. Their domain events fan out to:
+- Elasticsearch (search)
+- RabbitMQ (integration events)
+- EventStoreDB (event history)
+- Redis (cache invalidation and real-time pub/sub)
 
-## Tech Stack
+Includes a Next.js test frontend (`frontend-test/`).
 
-- **NestJS** — Modular, decorator-based Node.js framework
-- **TypeScript** — Full type safety across the codebase
-- **Prisma ORM** — Type-safe database access with SQLite
-- **CQRS Pattern** — Command-Query Responsibility Segregation via `@nestjs/cqrs`
-- **GraphQL** — Auto-schema GraphQL API via Apollo Server
-- **Search** — Full-text post search endpoint
+## Tech stack
 
-## Project Structure
+- **NestJS 11** (TypeScript), dependency-injected modules, global JWT guard with `@Public()` and `@Roles()`
+- **PostgreSQL + Prisma** for users (USER/ADMIN), posts, tags, comments and generic gRPC entities. Migrations are in `prisma/migrations`.
+- **CQRS** (`@nestjs/cqrs`):
+  - Commands: create, update and delete post; add and delete comment.
+  - Queries: list and get posts, cached in Redis.
+  - Events: handled by `PostEventsHandler`.
+- **GraphQL**: Apollo Federation 2 subgraph (code first, `@key` on `User`/`Post`), plus a standalone Apollo Gateway (`npm run start:gateway`)
+- **gRPC**: `EnterpriseService` from `src/integrations/proto/enterprise.proto`, running as a hybrid microservice on :50051
+- **WebSockets**: socket.io gateway. `postUpdate` is broadcast to everyone, and per-post rooms (`post:<id>`) receive comment events. Optional JWT handshake.
+- **Search**: Elasticsearch with multi-match, fuzziness, highlights and tag facets. It falls back to PostgreSQL when Elasticsearch isn't configured.
+- **Integrations**: webhooks with signature verification (generic HMAC, GitHub `X-Hub-Signature-256`, Stripe `Stripe-Signature` with timestamp tolerance), Slack notifications, and an integration status view. See [NESTJS_ENTERPRISE_IMPLEMENTATION.md](NESTJS_ENTERPRISE_IMPLEMENTATION.md).
+- **Cross-cutting** (see [NESTJS_ENTERPRISE_API_HLD_LLD.md](NESTJS_ENTERPRISE_API_HLD_LLD.md)):
+  - Redis cache service.
+  - Redis token-bucket rate limiter, plus a global throttler that also covers GraphQL.
+  - Structured JSON logging with correlation IDs (`X-Correlation-Id`) and audit events.
+  - Prometheus metrics and health checks that cover dependencies.
+
+## Project structure
 
 ```
 src/
-├── app.module.ts           # Root module
-├── main.ts                 # Entry point (port 6000)
-├── prisma/                 # Prisma service & module
-├── users/                  # Users CRUD (Prisma)
-│   ├── users.controller.ts
-│   ├── users.service.ts
-│   └── dto/
-├── posts/                  # Posts service (shared)
-├── cqrs/                   # CQRS command handlers
-│   └── commands/
-│       ├── create-post.command.ts
-│       └── create-post.handler.ts
-├── search/                 # Full-text search endpoint
-└── graphql/                # GraphQL resolvers & models
-    ├── models/
-    └── resolvers/
-prisma/
-└── schema.prisma           # SQLite schema (User, Post)
-frontend-test/              # Next.js test dashboard (port 3103)
+├── main.ts                    # HTTP :4000 + gRPC :50051 (hybrid), Swagger at /api-docs
+├── app.module.ts              # GraphQL federation subgraph, throttler, global guards
+├── auth/                      # register / login (passport-local) / JWT strategy / profile
+├── users/                     # users CRUD (admin), roles
+├── posts/                     # REST controller + data access (posts, tags, comments)
+├── cqrs/                      # commands, queries, domain events, PostEventsHandler fan-out
+├── search/                    # Elasticsearch or PostgreSQL search, reindex
+├── graphql/                   # models + resolvers (users, posts, comments, search)
+├── gateway/main.ts            # Apollo Federation gateway
+├── integrations/              # elasticsearch, rabbitmq, eventstore, redis, grpc server/client, webhooks
+├── websockets/                # socket.io gateway (Redis pub/sub fan-out)
+├── monitoring/                # health, Prometheus metrics, stats, alerts
+└── common/                    # guards, decorators, cache / rate limiting / structured logging services
+prisma/                        # schema.prisma (PostgreSQL), migrations, seed
+frontend-test/                 # Next.js 14 test UI (feed, search, editor, post + comments, dashboard)
 ```
 
-## Getting Started
+## Getting started
 
 ```bash
-# Install dependencies
-npm install
-
-# Generate Prisma client & push schema to SQLite
-npx prisma generate
-npx prisma db push
-
-# Start development server
-npm run dev
+cp .env.example .env            # set DATABASE_URL and JWT_SECRET; the other services are optional
+npm install --legacy-peer-deps  # also runs prisma generate
+npx prisma migrate deploy
+npm run prisma:seed             # admin@enterprise.io / user@enterprise.io, password ChangeMe123!
+npm run start:dev               # http://localhost:4000
 ```
 
-Server runs at **http://localhost:6000**
+- REST docs: http://localhost:4000/api-docs
+- GraphQL: http://localhost:4000/graphql
+- gRPC: `localhost:50051`
+- Health: http://localhost:4000/monitoring/health
+- Metrics: http://localhost:4000/monitoring/metrics
 
-## API Endpoints
+The first account registered on an empty database becomes `ADMIN`. Port 4000 replaces the old 6000, which browsers block (it is on the fetch "bad ports" list).
+
+Frontend:
+
+```bash
+cd frontend-test && npm install && npm run dev    # http://localhost:3103
+```
+
+Federation gateway (composes `GRAPHQL_SUBGRAPHS`):
+
+```bash
+npm run build && npm run start:gateway             # http://localhost:4001
+```
+
+### Everything with Docker
+
+```bash
+docker compose up --build
+```
+
+This starts:
+- 2 API replicas behind nginx on :80
+- the gateway on :4001 and the frontend on :3103
+- PostgreSQL, Redis, Elasticsearch 8.17, RabbitMQ (UI on :15672) and EventStoreDB (:2113)
+- Prometheus (:9090) and Grafana (:3000)
+
+Migrations run when the API container starts.
+
+## API overview
 
 ### REST
 
-| Method | Endpoint         | Description                  |
-| ------ | ---------------- | ---------------------------- |
-| `POST` | `/users`         | Create a user                |
-| `GET`  | `/users`         | Get all users                |
-| `GET`  | `/users/:id`     | Get user by ID               |
-| `POST` | `/cqrs/posts`    | Create post via CQRS command |
-| `GET`  | `/search?q=term` | Full-text search posts       |
+| Method | Endpoint | Auth |
+|---|---|---|
+| POST | `/auth/register`, `/auth/login` | public |
+| GET/PATCH | `/auth/profile` | user |
+| GET | `/users`, `/users/:id` | user |
+| POST | `/users` | admin |
+| PATCH | `/users/:id/role` | admin |
+| DELETE | `/users/:id` | admin |
+| GET | `/posts?page&limit&tag&authorId`, `/posts/:id`, `/posts/tags` | public |
+| POST | `/posts`, `/cqrs/posts` | user |
+| PATCH/DELETE | `/posts/:id` | author or admin |
+| POST | `/posts/:id/comments` | user |
+| DELETE | `/posts/comments/:id` | author or admin |
+| GET | `/posts/:id/history` (EventStoreDB) | user |
+| GET | `/search?q&tag&page` | public |
+| POST | `/search/reindex` | admin |
+| POST | `/integrations/webhook`, `/integrations/github/webhook`, `/integrations/stripe/webhook` | signature |
+| GET | `/integrations/status` | user |
+| GET | `/integrations/webhooks/recent` | admin |
+| POST | `/integrations/slack/send` | admin |
+| GET/POST/PATCH/DELETE | `/integrations/grpc/entities[/:id]` (REST to gRPC) | user |
+| GET | `/monitoring/health`, `/monitoring/metrics` | public |
+| GET | `/monitoring/stats`, `/monitoring/alerts` | admin |
 
 ### GraphQL
 
-Playground available at **http://localhost:6000/graphql**
-
 ```graphql
-query {
-  users {
-    id
-    name
-    email
-    posts {
-      title
-      content
-    }
-  }
-}
-
-mutation {
-  createUser(name: "Alice", email: "alice@example.com") {
-    id
-    name
-  }
-}
+query { posts(limit: 10, tag: "nestjs") { total data { id title tags author { name } commentCount } } }
+query { me { email posts { title } } }                      # Authorization: Bearer <token>
+mutation { createPost(input: { title: "Hi", content: "...", tags: ["intro"] }) { id } }
+query { searchPosts(q: "federation") { engine total results { title } } }
 ```
 
-## Environment Variables
+### gRPC
 
-Copy `.env.example` to `.env`:
+`enterprise.EnterpriseService`: `CreateEntity`, `GetEntity`, `UpdateEntity` (merges attributes), `DeleteEntity`, `StreamEntities` (server streaming).
 
-```env
-DATABASE_URL="file:./dev.db"
-PORT=6000
-NODE_ENV=development
+### WebSockets
+
+```js
+const socket = io('http://localhost:4000', { auth: { token } });
+socket.on('postUpdate', (m) => ...);          // { event: 'post.created' | 'post.updated' | 'post.deleted' | 'comment.added' | ..., postId, data }
+socket.emit('joinRoom', `post:${id}`);         // then: socket.on('comment.added', ...)
 ```
 
-## NestJS Concepts Demonstrated
+## Tests and CI
 
-| Concept               | Where                    |
-| --------------------- | ------------------------ |
-| Dependency Injection  | All services & modules   |
-| Modular Architecture  | `*.module.ts` files      |
-| Guards & Interceptors | NestJS global pipes      |
-| Pipes & Validation    | `class-validator` DTOs   |
-| Exception Filters     | Built-in HTTP exceptions |
-| CQRS Commands         | `src/cqrs/commands/`     |
-| GraphQL Resolvers     | `src/graphql/resolvers/` |
-| Prisma Integration    | `src/prisma/`            |
+- **Existing specs:** `npx jest`. `users.service.spec.ts` passes 6/6. `auth.service.spec.ts` does not compile because of a pre-existing typing issue: `jest.spyOn` on bcrypt resolves its callback overload. `test/app.e2e-spec.ts` imports vitest, which is not installed.
+- **`.github/workflows/ci.yml`:** typecheck, build, migration plus drift check against Postgres, the users spec, frontend build, and Docker image and compose validation.
+- **`.github/workflows/ci-cd.yml`:** `npm audit` (high and above), then publishes both images to GHCR on `main`.
 
-## Frontend Test Dashboard
+## Verification
 
-A modern Next.js test dashboard with TypeScript and Tailwind CSS for testing the API.
+On a dev machine against PostgreSQL 18, Redis and Elasticsearch 8.17, 52 end-to-end checks passed:
+- auth and roles
+- CRUD through CQRS, with cache hit and invalidation
+- Elasticsearch search (fuzzy, highlight, facets) and delete sync
+- GraphQL queries and mutations, federation `_service` and `_entities`
+- the gRPC server (CRUD, NOT_FOUND, streaming) and the REST-to-gRPC bridge
+- websocket events through Redis pub/sub
+- webhook signatures (valid, invalid, stale)
+- metrics and RBAC
 
-```bash
-cd frontend-test
-npm install
-npm run dev   # http://localhost:3103
-```
+The frontend production build passes.
 
-### Frontend Features
-
-- **TypeScript** - Full type safety across the application
-- **Tailwind CSS** - Modern, responsive UI design
-- **Type-Safe API Client** - Custom client with error handling
-- **User CRUD Testing** - Create and fetch users via Prisma
-- **CQRS Pattern Testing** - Create posts using command pattern
-- **Full-Text Search** - Search posts with the search endpoint
-- **GraphQL Integration** - Direct link to GraphQL Playground
-- **Error Handling** - User-friendly error messages and loading states
-
-### Frontend Setup
-
-1. Install dependencies:
-```bash
-cd frontend-test
-npm install
-```
-
-2. Configure environment (optional):
-```bash
-cp .env.example .env.local
-```
-
-3. Start development server:
-```bash
-npm run dev
-```
-
-The frontend will be available at **http://localhost:3103**
-
-See [frontend-test/README.md](frontend-test/README.md) for detailed frontend documentation.
-
----
-
-## 📝 License
-
-Proprietary - All rights reserved.
+**Not run here:**
+- RabbitMQ and EventStoreDB (no local brokers)
+- a query through the federation gateway
+- Docker images and the compose stack

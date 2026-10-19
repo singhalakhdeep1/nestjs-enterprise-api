@@ -16,3 +16,10 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# next.js / build caches
+.next/
+next-env.d.ts
+*.tsbuildinfo
+.env.local
+coverage/

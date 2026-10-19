@@ -1,81 +1,59 @@
 /**
  * Rate Limiting Service for NestJS Enterprise API
- * Implements token bucket algorithm for API rate limiting
+ * Token bucket per key, stored in Redis and updated atomically with a Lua script.
+ * Fails open without Redis (the global @nestjs/throttler limit still applies).
  */
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { Redis } from 'ioredis';
+import { createRedis } from '../cache/cache.service';
 
-interface TokenBucket {
-  tokens: number;
-  lastRefill: number;
-}
+const LUA = `
+local b = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local cap = tonumber(ARGV[1]); local rate = tonumber(ARGV[2]); local now = tonumber(ARGV[3]); local req = tonumber(ARGV[4])
+local tokens = tonumber(b[1]) or cap
+local ts = tonumber(b[2]) or now
+tokens = math.min(cap, tokens + ((now - ts) / 1000) * rate)
+local ok = 0
+if tokens >= req then tokens = tokens - req; ok = 1 end
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('PEXPIRE', KEYS[1], math.ceil(cap / rate * 1000) + 1000)
+return {ok, math.floor(tokens)}
+`;
 
 @Injectable()
-export class RateLimitingService {
+export class RateLimitingService implements OnModuleDestroy {
   private redis: Redis;
-  private bucketCapacity: number = 100;
-  private refillRate: number = 1; // tokens per second
+  private bucketCapacity = parseInt(process.env.RATE_LIMIT_BUCKET_CAPACITY || '100', 10);
+  private refillRate = parseFloat(process.env.RATE_LIMIT_REFILL_RATE || '1');
 
   constructor() {
-    this.redis = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-    });
+    this.redis = createRedis();
+    this.redis.on('error', () => undefined);
   }
 
-  async isAllowed(key: string, tokensRequested: number = 1): Promise<boolean> {
-    const bucket = await this.getOrCreateBucket(key);
-
-    const now = Date.now();
-    const timeSinceLastRefill = (now - bucket.lastRefill) / 1000;
-
-    const tokensToAdd = Math.floor(timeSinceLastRefill * this.refillRate);
-    bucket.tokens = Math.min(bucket.tokens + tokensToAdd, this.bucketCapacity);
-    bucket.lastRefill = now;
-
-    if (bucket.tokens >= tokensRequested) {
-      bucket.tokens -= tokensRequested;
-      await this.saveBucket(key, bucket);
-      return true;
+  async consume(key: string, tokens = 1): Promise<{ allowed: boolean; remaining: number }> {
+    if (this.redis.status !== 'ready') return { allowed: true, remaining: this.bucketCapacity };
+    try {
+      const [ok, remaining] = (await this.redis.eval(LUA, 1, `rate_limit:${key}`, this.bucketCapacity, this.refillRate, Date.now(), tokens)) as [number, number];
+      return { allowed: ok === 1, remaining };
+    } catch {
+      return { allowed: true, remaining: this.bucketCapacity };
     }
+  }
 
-    return false;
+  async isAllowed(key: string, tokensRequested = 1): Promise<boolean> {
+    return (await this.consume(key, tokensRequested)).allowed;
   }
 
   async getRemainingTokens(key: string): Promise<number> {
-    const bucket = await this.getOrCreateBucket(key);
-
-    const now = Date.now();
-    const timeSinceLastRefill = (now - bucket.lastRefill) / 1000;
-    const tokensToAdd = Math.floor(timeSinceLastRefill * this.refillRate);
-    bucket.tokens = Math.min(bucket.tokens + tokensToAdd, this.bucketCapacity);
-    bucket.lastRefill = now;
-
-    await this.saveBucket(key, bucket);
-    return bucket.tokens;
+    return (await this.consume(key, 0)).remaining;
   }
 
   async resetBucket(key: string): Promise<void> {
-    await this.redis.del(`rate_limit:${key}`);
+    if (this.redis.status === 'ready') await this.redis.del(`rate_limit:${key}`).catch(() => undefined);
   }
 
-  private async getOrCreateBucket(key: string): Promise<TokenBucket> {
-    const data = await this.redis.get(`rate_limit:${key}`);
-
-    if (data) {
-      return JSON.parse(data);
-    }
-
-    const bucket: TokenBucket = {
-      tokens: this.bucketCapacity,
-      lastRefill: Date.now(),
-    };
-
-    await this.saveBucket(key, bucket);
-    return bucket;
-  }
-
-  private async saveBucket(key: string, bucket: TokenBucket): Promise<void> {
-    await this.redis.setex(`rate_limit:${key}`, 3600, JSON.stringify(bucket));
+  onModuleDestroy() {
+    this.redis.disconnect();
   }
 }

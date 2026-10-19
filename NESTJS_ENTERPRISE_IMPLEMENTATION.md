@@ -72,61 +72,21 @@ This document describes the enterprise integrations added to NestJS Enterprise A
 ### Protocol Buffers
 - `src/integrations/proto/enterprise.proto` - gRPC schema
 
-## Installation Required
+## How each integration is wired
 
-Add to `package.json`:
-```json
-{
-  "dependencies": {
-    "@nestjs/microservices": "^10.3.0",
-    "@grpc/grpc-js": "^1.9.0",
-    "@grpc/proto-loader": "^0.7.0",
-    "@eventstore/db-client": "^5.0.0",
-    "amqp-connection-manager": "^4.1.0",
-    "@elastic/elasticsearch": "^8.11.0",
-    "ioredis": "^5.3.0",
-    "@nestjs/apollo": "^12.0.0",
-    "@apollo/gateway": "^2.5.0",
-    "graphql": "^16.8.0"
-  }
-}
-```
+| Integration | Code | Used for | Enable with |
+|---|---|---|---|
+| gRPC | `src/integrations/grpc.controller.ts` (server), `grpc.service.ts` (client) | `EnterpriseService` from `proto/enterprise.proto` runs as a hybrid microservice next to HTTP, backed by the `Entity` table (CRUD + server streaming). REST bridge at `/integrations/grpc/entities` | `GRPC_URL` (default `0.0.0.0:50051`) |
+| EventStoreDB | `src/integrations/eventstore.service.ts` | Every CQRS domain event is appended to stream `post-<id>`; `GET /posts/:id/history` replays it | `EVENTSTORE_CONNECTION_STRING` |
+| RabbitMQ | `src/integrations/rabbitmq.service.ts` | Domain events (`post.*`, `comment.*`, `webhook.*`) published to a durable topic exchange with reconnects and publisher confirms; `subscribe()` for consumers | `RABBITMQ_URL` |
+| Elasticsearch | `src/integrations/elasticsearch.service.ts` | Posts index kept in sync by the event handler; `GET /search` uses multi_match + fuzziness + highlights + tag facets; `POST /search/reindex` | `ELASTICSEARCH_NODE` (unset = PostgreSQL search) |
+| Redis | `src/integrations/redis.service.ts`, `src/common/services/*` | Cache-aside for post reads, token-bucket rate limiter (Lua), view counters, recent webhooks, pub/sub that fans real-time events to the socket.io gateway on every instance | `REDIS_URL` |
+| GraphQL Federation | `src/app.module.ts` (subgraph), `src/integrations/graphql-federation.service.ts` + `src/gateway/main.ts` (gateway) | The API is an Apollo Federation 2 subgraph (`@key` on `User` and `Post`, `_entities` resolvers); the gateway composes `GRAPHQL_SUBGRAPHS` with IntrospectAndCompose and forwards auth | `npm run start:gateway` |
 
-Run:
-```bash
-npm install
-```
+All integrations are optional at runtime: when the variable is unset the service reports `disabled` in `/monitoring/health` and the app keeps working. `docker-compose.yml` turns all of them on.
 
-## Environment Variables
+## Verification
 
-```env
-# gRPC
-GRPC_URL=localhost:50051
+Verified locally against PostgreSQL 18, Redis and Elasticsearch 8.17: 52 end-to-end checks covering REST, GraphQL (including `_service` and `_entities`), the gRPC server (direct `@grpc/grpc-js` client: CRUD, NOT_FOUND, streaming) and REST-to-gRPC bridge, Elasticsearch indexing/search/delete, Redis cache and pub/sub to websockets, and the GitHub/Stripe/generic webhook signatures.
 
-# EventStoreDB
-EVENTSTORE_URL=localhost:2113
-
-# RabbitMQ
-RABBITMQ_URL=amqp://localhost
-
-# Elasticsearch
-ELASTICSEARCH_URL=http://localhost:9200
-
-# Redis
-REDIS_URL=localhost:6379
-
-# GraphQL Federation
-USERS_SERVICE_URL=http://localhost:3001/graphql
-POSTS_SERVICE_URL=http://localhost:3002/graphql
-AUTH_SERVICE_URL=http://localhost:3003/graphql
-```
-
-## Notes
-- All code is written but packages are not installed (per user request)
-- gRPC requires Protocol Buffers compilation
-- EventStoreDB requires EventStoreDB server
-- RabbitMQ requires RabbitMQ server
-- Elasticsearch requires Elasticsearch cluster
-- Redis requires Redis server
-- GraphQL Federation requires subgraph services
-- Supergraph SDL needs to be generated via rover CLI
+Not run here: RabbitMQ and EventStoreDB (no local brokers), the federation gateway query path, Docker images.

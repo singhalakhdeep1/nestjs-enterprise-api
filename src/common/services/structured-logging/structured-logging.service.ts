@@ -1,9 +1,10 @@
 /**
  * Structured Logging Service for NestJS Enterprise API
- * Implements structured logging with correlation IDs and context
+ * JSON log lines with a per-request correlation id and user context (AsyncLocalStorage) and audit events.
  */
 import { Injectable } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 
 export interface LogContext {
   correlationId: string;
@@ -13,71 +14,52 @@ export interface LogContext {
   userAgent?: string;
 }
 
-export interface LogEntry {
-  timestamp: string;
-  level: string;
-  message: string;
-  context: LogContext;
-  additionalContext?: Record<string, any>;
-  error?: string;
-}
+const storage = new AsyncLocalStorage<LogContext>();
 
 @Injectable()
 export class StructuredLoggingService {
-  private currentContext: LogContext | null = null;
+  runWithContext<T>(context: LogContext, fn: () => T): T {
+    return storage.run(context, fn);
+  }
 
-  setContext(context: LogContext): void {
-    this.currentContext = context;
+  setContext(context: Partial<LogContext>): void {
+    const current = storage.getStore();
+    if (current) Object.assign(current, context);
   }
 
   getContext(): LogContext | null {
-    return this.currentContext;
+    return storage.getStore() ?? null;
   }
 
-  logInformation(message: string, additionalContext?: Record<string, any>): void {
-    const logEntry = this.createLogEntry('Information', message, additionalContext, null);
-    console.log(JSON.stringify(logEntry));
-  }
-
-  logWarning(message: string, additionalContext?: Record<string, any>): void {
-    const logEntry = this.createLogEntry('Warning', message, additionalContext, null);
-    console.warn(JSON.stringify(logEntry));
-  }
-
-  logError(message: string, error: string, additionalContext?: Record<string, any>): void {
-    const logEntry = this.createLogEntry('Error', message, additionalContext, error);
-    console.error(JSON.stringify(logEntry));
-  }
-
-  logAuditEvent(eventType: string, description: string, additionalContext?: Record<string, any>): void {
-    const context = { ...additionalContext };
-    context['auditEventType'] = eventType;
-    context['auditDescription'] = description;
-
-    const logEntry = this.createLogEntry('Audit', `AUDIT: ${description}`, context, null);
-    console.log(JSON.stringify(logEntry));
-  }
-
-  static createCorrelationId(): string {
-    return uuidv4();
-  }
-
-  private createLogEntry(level: string, message: string, additionalContext?: Record<string, any>, error?: string): LogEntry {
-    const context = this.currentContext || this.defaultContext();
-
-    return {
+  private write(level: string, message: string, extra?: Record<string, unknown>, error?: string) {
+    const line = JSON.stringify({
       timestamp: new Date().toISOString(),
       level,
       message,
-      context,
-      additionalContext,
-      error
-    };
+      context: this.getContext() ?? { correlationId: StructuredLoggingService.createCorrelationId() },
+      ...(extra ? { additionalContext: extra } : {}),
+      ...(error ? { error } : {}),
+    });
+    (level === 'Error' ? process.stderr : process.stdout).write(line + '\n');
   }
 
-  private defaultContext(): LogContext {
-    return {
-      correlationId: StructuredLoggingService.createCorrelationId()
-    };
+  logInformation(message: string, additionalContext?: Record<string, unknown>) {
+    this.write('Information', message, additionalContext);
+  }
+
+  logWarning(message: string, additionalContext?: Record<string, unknown>) {
+    this.write('Warning', message, additionalContext);
+  }
+
+  logError(message: string, error: string, additionalContext?: Record<string, unknown>) {
+    this.write('Error', message, additionalContext, error);
+  }
+
+  logAuditEvent(eventType: string, description: string, additionalContext?: Record<string, unknown>) {
+    this.write('Audit', `AUDIT: ${description}`, { auditEventType: eventType, ...additionalContext });
+  }
+
+  static createCorrelationId(): string {
+    return randomUUID();
   }
 }

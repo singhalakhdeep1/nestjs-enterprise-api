@@ -1,12 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { apiClient, RegisterDto } from '@/lib/api-client';
+import { apiClient } from '@/lib/api-client';
 import { useRouter } from 'next/navigation';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const [formData, setFormData] = useState<RegisterDto>({ name: '', email: '', password: '' });
+  const [formData, setFormData] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -16,8 +16,8 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      await apiClient.register(formData);
-      router.push('/auth/login');
+      await apiClient.register(formData.name, formData.email, formData.password);
+      router.push('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Registration failed');
     } finally {

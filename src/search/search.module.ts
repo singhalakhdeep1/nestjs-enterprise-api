@@ -7,5 +7,6 @@ import { PostsModule } from '../posts/posts.module';
     imports: [PostsModule],
     controllers: [SearchController],
     providers: [SearchService],
+    exports: [SearchService],
 })
 export class SearchModule { }

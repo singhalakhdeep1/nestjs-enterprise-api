@@ -1,76 +1,57 @@
-// EventStoreDB integration for nestjs-enterprise-api
-
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { EventStoreDBClient, jsonEvent } from '@eventstore/db-client';
+// EventStoreDB integration: every CQRS domain event is appended to the stream `post-<id>` so a post's
+// full history can be replayed (GET /posts/:id/history). Enabled by EVENTSTORE_CONNECTION_STRING.
+import { Injectable, Logger } from '@nestjs/common';
+import { EventStoreDBClient, jsonEvent, FORWARDS, START, StreamNotFoundError } from '@eventstore/db-client';
 
 @Injectable()
-export class EventStoreService implements OnModuleInit, OnModuleDestroy {
-  private client: EventStoreDBClient;
+export class EventStoreService {
+  private readonly logger = new Logger(EventStoreService.name);
+  private client: EventStoreDBClient | null = process.env.EVENTSTORE_CONNECTION_STRING
+    ? EventStoreDBClient.connectionString(process.env.EVENTSTORE_CONNECTION_STRING)
+    : null;
 
-  constructor() {
-    this.client = new EventStoreDBClient({
-      endpoint: 'localhost:2113',
-    });
+  get enabled() {
+    return this.client !== null;
   }
 
-  async onModuleInit() {
+  async appendEvent(stream: string, type: string, data: Record<string, unknown>, metadata: Record<string, unknown> = {}) {
+    if (!this.client) return null;
     try {
-      await this.client.readAll({
-        direction: 'forwards',
-        maxCount: 10,
-      });
-      console.log('Connected to EventStoreDB');
-    } catch (error) {
-      console.error('Failed to connect to EventStoreDB:', error);
+      return await this.client.appendToStream(stream, jsonEvent({ type, data: data as never, metadata: metadata as never }));
+    } catch (err) {
+      this.logger.error(`append ${type} to ${stream} failed: ${(err as Error).message}`);
+      return null;
     }
   }
 
-  onModuleDestroy() {
-    this.client.dispose();
-  }
-
-  async appendEvent(streamName: string, eventType: string, data: any) {
-    const event = jsonEvent({
-      type: eventType,
-      data: data,
-    });
-
-    return this.client.appendToStream(streamName, event);
-  }
-
-  async readStream(streamName: string) {
-    const events = this.client.readStream(streamName, {
-      direction: 'forwards',
-      maxCount: 10,
-    });
-
-    const result = [];
-    for await (const event of events) {
-      result.push(event);
+  async readStream(stream: string, maxCount = 200) {
+    if (!this.client) throw new Error('EventStoreDB not configured');
+    const events: { type: string; data: unknown; metadata: unknown; revision: string; created: Date }[] = [];
+    try {
+      for await (const resolved of this.client.readStream(stream, { direction: FORWARDS, fromRevision: START, maxCount })) {
+        const e = resolved.event;
+        if (e) events.push({ type: e.type, data: e.data, metadata: e.metadata, revision: String(e.revision), created: new Date(e.created) });
+      }
+    } catch (err) {
+      if (err instanceof StreamNotFoundError) return [];
+      throw err;
     }
-    return result;
+    return events;
   }
 
-  async subscribeToStream(streamName: string, callback: (event: any) => void) {
-    const subscription = this.client.subscribeToStream(streamName, {
-      direction: 'forwards',
-      fromRevision: 'start',
-    });
+  async subscribeToStream(stream: string, onEvent: (type: string, data: unknown) => void) {
+    if (!this.client) return;
+    const sub = this.client.subscribeToStream(stream);
+    for await (const resolved of sub) if (resolved.event) onEvent(resolved.event.type, resolved.event.data);
+  }
 
-    for await (const event of subscription) {
-      callback(event);
+  async health(): Promise<string> {
+    if (!this.client) return 'disabled';
+    try {
+      for await (const _ of this.client.readAll({ maxCount: 1 })) break;
+      return 'connected';
+    } catch {
+      return 'disconnected';
     }
-  }
-
-  async deleteStream(streamName: string) {
-    return this.client.deleteStream(streamName);
-  }
-
-  async getStreamMetadata(streamName: string) {
-    return this.client.getStreamMetadata(streamName);
-  }
-
-  async setStreamMetadata(streamName: string, metadata: any) {
-    return this.client.setStreamMetadata(streamName, metadata);
   }
 }

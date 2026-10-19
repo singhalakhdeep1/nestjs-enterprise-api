@@ -1,20 +1,11 @@
-import { ObjectType, Field, ID } from '@nestjs/graphql';
-import { PostModel } from './post.model';
+import { ObjectType, Field, ID, Directive } from '@nestjs/graphql';
 
-@ObjectType()
+@ObjectType('User')
+@Directive('@key(fields: "id")')
 export class UserModel {
-    @Field(() => ID)
-    id: string;
-
-    @Field()
-    name: string;
-
-    @Field()
-    email: string;
-
-    @Field()
-    createdAt: Date;
-
-    @Field(() => [PostModel], { nullable: true })
-    posts?: PostModel[];
+  @Field(() => ID) id: string;
+  @Field() name: string;
+  @Field() email: string;
+  @Field() role: string;
+  @Field() createdAt: Date;
 }

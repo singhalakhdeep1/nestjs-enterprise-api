@@ -1,12 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { apiClient, LoginDto } from '@/lib/api-client';
+import { apiClient } from '@/lib/api-client';
 import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [formData, setFormData] = useState<LoginDto>({ email: '', password: '' });
+  const [formData, setFormData] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -16,8 +16,8 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await apiClient.login(formData);
-      router.push('/');
+      await apiClient.login(formData.email, formData.password);
+      router.push('/dashboard');
       router.refresh();
     } catch (err: any) {
       setError(err.message || 'Login failed');

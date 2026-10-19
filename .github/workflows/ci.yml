@@ -3,15 +3,52 @@ on:
   push:
     branches: [main]
   pull_request:
+
 jobs:
-  build:
+  api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: enterprise, POSTGRES_PASSWORD: enterprise, POSTGRES_DB: enterprise }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U enterprise" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://enterprise:enterprise@localhost:5432/enterprise
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-      - run: npm install --include=dev
-      - run: npm run build --if-present
-      - run: npm test --if-present
+      - run: npm ci --legacy-peer-deps
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Migrations apply and match the schema
+        run: |
+          npx prisma migrate deploy
+          npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - run: npx jest src/users
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: frontend-test }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend-test/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  docker:
+    needs: [api, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t nestjs-enterprise-api .
+      - run: docker build -t nestjs-enterprise-frontend frontend-test
+      - run: docker compose config -q

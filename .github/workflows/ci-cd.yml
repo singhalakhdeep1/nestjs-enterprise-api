@@ -2,92 +2,44 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v3
-      with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-    
-    - name: Install dependencies
-      run: npm ci
-    
-    - name: Generate Prisma client
-      run: npx prisma generate
-    
-    - name: Run linter
-      run: npm run lint || echo "No lint script configured"
-    
-    - name: Run tests
-      run: npm test || echo "No test script configured"
-    
-    - name: Build
-      run: npm run build
-
   security-scan:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Run npm audit
-      run: npm audit --audit-level=moderate
-    
-    - name: Run Snyk security scan
-      uses: snyk/actions/node@master
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: npm audit (production dependencies, high and above)
+        run: npm audit --omit=dev --audit-level=high
 
-  deploy-staging:
-    needs: [test, security-scan]
+  publish:
+    needs: security-scan
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop'
-    
+    strategy:
+      matrix:
+        include:
+          - { name: api, context: ., file: Dockerfile }
+          - { name: frontend, context: frontend-test, file: frontend-test/Dockerfile }
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Deploy to staging
-      run: |
-        echo "Deploying to staging environment"
-        # Add deployment commands here
-    
-    - name: Run smoke tests
-      run: |
-        curl -f https://staging-api.example.com/health || exit 1
-
-  deploy-production:
-    needs: [test, security-scan]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Deploy to production
-      run: |
-        echo "Deploying to production environment"
-        # Add deployment commands here
-    
-    - name: Run smoke tests
-      run: |
-        curl -f https://api.example.com/health || exit 1
-    
-    - name: Notify team
-      uses: 8398a7/action-slack@v3
-      with:
-        status: ${{ job.status }}
-        text: 'Deployment to production completed'
-      if: always()
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.name }}:latest,ghcr.io/${{ github.repository }}/${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

@@ -1,123 +1,97 @@
-// Redis integration for nestjs-enterprise-api
-
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { Redis } from 'ioredis';
+// Redis integration (ioredis): key/value, hash, list, set and counter helpers plus pub/sub. The app uses
+// pub/sub to fan out real-time events to every API instance (websocket gateway) and counters for post views.
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import type { Redis } from 'ioredis';
+import { createRedis } from '../common/services/cache/cache.service';
 
 @Injectable()
-export class RedisService implements OnModuleInit, OnModuleDestroy {
-  private client: Redis;
+export class RedisService implements OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
+  private client: Redis = createRedis();
+  private subscriber: Redis | null = null;
+  private handlers = new Map<string, ((message: unknown) => void)[]>();
 
   constructor() {
-    this.client = new Redis({
-      host: 'localhost',
-      port: 6379,
-    });
+    this.client.on('error', () => undefined);
   }
 
-  async onModuleInit() {
-    this.client.on('connect', () => {
-      console.log('Connected to Redis');
-    });
-
-    this.client.on('error', (err) => {
-      console.error('Redis error:', err);
-    });
-  }
-
-  onModuleDestroy() {
-    this.client.quit();
-  }
-
-  async set(key: string, value: string, ttl?: number) {
-    if (ttl) {
-      return this.client.setex(key, ttl, value);
-    }
-    return this.client.set(key, value);
+  get ready() {
+    return this.client.status === 'ready';
   }
 
   async get(key: string) {
-    return this.client.get(key);
+    return this.ready ? this.client.get(key) : null;
+  }
+
+  async set(key: string, value: string, ttlSeconds?: number) {
+    if (!this.ready) return;
+    if (ttlSeconds) await this.client.setex(key, ttlSeconds, value);
+    else await this.client.set(key, value);
   }
 
   async del(key: string) {
-    return this.client.del(key);
-  }
-
-  async exists(key: string) {
-    return this.client.exists(key);
-  }
-
-  async expire(key: string, seconds: number) {
-    return this.client.expire(key, seconds);
+    if (this.ready) await this.client.del(key);
   }
 
   async hset(key: string, field: string, value: string) {
-    return this.client.hset(key, field, value);
-  }
-
-  async hget(key: string, field: string) {
-    return this.client.hget(key, field);
+    if (this.ready) await this.client.hset(key, field, value);
   }
 
   async hgetall(key: string) {
-    return this.client.hgetall(key);
-  }
-
-  async hdel(key: string, ...fields: string[]) {
-    return this.client.hdel(key, ...fields);
+    return this.ready ? this.client.hgetall(key) : {};
   }
 
   async lpush(key: string, ...values: string[]) {
-    return this.client.lpush(key, ...values);
+    if (this.ready) await this.client.lpush(key, ...values);
   }
 
-  async rpush(key: string, ...values: string[]) {
-    return this.client.rpush(key, ...values);
-  }
-
-  async lrange(key: string, start: number, stop: number) {
-    return this.client.lrange(key, start, stop);
-  }
-
-  async lpop(key: string) {
-    return this.client.lpop(key);
-  }
-
-  async rpop(key: string) {
-    return this.client.rpop(key);
+  async lrange(key: string, start = 0, stop = -1) {
+    return this.ready ? this.client.lrange(key, start, stop) : [];
   }
 
   async sadd(key: string, ...members: string[]) {
-    return this.client.sadd(key, ...members);
-  }
-
-  async srem(key: string, ...members: string[]) {
-    return this.client.srem(key, ...members);
+    if (this.ready) await this.client.sadd(key, ...members);
   }
 
   async smembers(key: string) {
-    return this.client.smembers(key);
+    return this.ready ? this.client.smembers(key) : [];
   }
 
-  async incr(key: string) {
-    return this.client.incr(key);
+  async incr(key: string): Promise<number | null> {
+    return this.ready ? this.client.incr(key) : null;
   }
 
-  async decr(key: string) {
-    return this.client.decr(key);
+  async publish(channel: string, message: unknown) {
+    if (this.ready) await this.client.publish(channel, JSON.stringify(message));
+    else this.handlers.get(channel)?.forEach((h) => h(message)); // single-instance fallback
   }
 
-  async publish(channel: string, message: string) {
-    return this.client.publish(channel, message);
+  /** Subscribes on a dedicated connection (required by Redis while in subscribe mode). */
+  async subscribe(channel: string, handler: (message: unknown) => void) {
+    this.handlers.set(channel, [...(this.handlers.get(channel) ?? []), handler]);
+    if (!this.subscriber) {
+      // The subscriber may subscribe before it is connected, so it queues commands until ready.
+      this.subscriber = this.client.duplicate({ enableOfflineQueue: true, maxRetriesPerRequest: null });
+      this.subscriber.on('error', () => undefined);
+      this.subscriber.on('message', (ch, raw) => {
+        let msg: unknown = raw;
+        try {
+          msg = JSON.parse(raw);
+        } catch {
+          // plain string
+        }
+        this.handlers.get(ch)?.forEach((h) => h(msg));
+      });
+    }
+    await this.subscriber.subscribe(channel).catch((e) => this.logger.debug(`subscribe failed: ${e.message}`));
   }
 
-  async subscribe(channel: string, callback: (message: string) => void) {
-    const subscriber = this.client.duplicate();
-    await subscriber.subscribe(channel);
-    subscriber.on('message', (chan, message) => {
-      if (chan === channel) {
-        callback(message);
-      }
-    });
+  status() {
+    return this.ready ? 'connected' : 'disconnected';
+  }
+
+  onModuleDestroy() {
+    this.subscriber?.disconnect();
+    this.client.disconnect();
   }
 }

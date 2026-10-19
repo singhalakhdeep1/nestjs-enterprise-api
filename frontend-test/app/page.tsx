@@ -1,351 +1,96 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { apiClient, User, Post, ApiError } from '@/lib/api-client';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import './globals.css';
+import { io } from 'socket.io-client';
+import { API_URL, apiClient, type Page, type Post, type SearchResult } from '../lib/api-client';
 
-export default function NestJSTestDashboard() {
-  const [users, setUsers] = useState<User[]>([]);
-  const [searchResults, setSearchResults] = useState<Post[]>([]);
-  const [commandResult, setCommandResult] = useState<Post | null>(null);
-  const [loading, setLoading] = useState<Record<string, boolean>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+export default function FeedPage() {
+  const [feed, setFeed] = useState<Page<Post> | null>(null);
+  const [tags, setTags] = useState<{ name: string; posts: number }[]>([]);
+  const [tag, setTag] = useState('');
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<SearchResult | null>(null);
+  const [live, setLive] = useState<string[]>([]);
+  const [error, setError] = useState('');
 
+  const load = useCallback(() => {
+    apiClient.listPosts({ tag: tag || undefined }).then(setFeed).catch((e) => setError(e.message));
+    apiClient.tags().then(setTags).catch(() => undefined);
+  }, [tag]);
+  useEffect(load, [load]);
+
+  // Live updates: post/comment events fan out via Redis pub/sub to the socket.io gateway.
   useEffect(() => {
-    checkAuth();
-    fetchUsers();
-  }, []);
+    const socket = io(API_URL, { transports: ['websocket'], auth: { token: apiClient.getToken() } });
+    socket.on('postUpdate', (m: { event: string; data: { title?: string } }) => {
+      setLive((l) => [`${m.event}${m.data?.title ? `: ${m.data.title}` : ''}`, ...l].slice(0, 5));
+      load();
+    });
+    return () => {
+      socket.close();
+    };
+  }, [load]);
 
-  const checkAuth = () => {
-    if (typeof window !== 'undefined') {
-      const token = localStorage.getItem('token');
-      setIsAuthenticated(!!token);
-    }
-  };
-
-  const showError = (message: string) => {
-    setError(message);
-    setTimeout(() => setError(null), 5000);
-  };
-
-  // CRUD Operations
-  const createUser = async () => {
-    setLoading((prev) => ({ ...prev, createUser: true }));
-    setError(null);
+  const search = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim()) return setResults(null);
     try {
-      const data = await apiClient.createUser({
-        name: `User ${Date.now()}`,
-        email: `user${Date.now()}@test.com`,
-      });
-      alert('User created!');
-      fetchUsers();
+      setResults(await apiClient.searchPosts(query, tag || undefined));
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Failed to create user';
-      showError(message);
-    } finally {
-      setLoading((prev) => ({ ...prev, createUser: false }));
-    }
-  };
-
-  const fetchUsers = async () => {
-    setLoading((prev) => ({ ...prev, users: true }));
-    setError(null);
-    try {
-      const data = await apiClient.getUsers();
-      setUsers(data);
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Failed to fetch users';
-      showError(message);
-    } finally {
-      setLoading((prev) => ({ ...prev, users: false }));
-    }
-  };
-
-  // CQRS Command
-  const createPost = async () => {
-    if (users.length === 0) {
-      alert('Create users first!');
-      return;
-    }
-
-    setLoading((prev) => ({ ...prev, cqrs: true }));
-    setError(null);
-    try {
-      const data = await apiClient.createPost({
-        title: `Post ${Date.now()}`,
-        content: 'This is a test post created via CQRS command pattern',
-        authorId: users[0].id,
-      });
-      setCommandResult(data);
-      alert('Post created via CQRS!');
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Failed to create post';
-      showError(message);
-    } finally {
-      setLoading((prev) => ({ ...prev, cqrs: false }));
-    }
-  };
-
-  // Search
-  const searchPosts = async (query: string) => {
-    if (!query.trim()) return;
-    
-    setLoading((prev) => ({ ...prev, search: true }));
-    setError(null);
-    try {
-      const data = await apiClient.searchPosts(query);
-      setSearchResults(data);
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Failed to search posts';
-      showError(message);
-    } finally {
-      setLoading((prev) => ({ ...prev, search: false }));
+      setError((err as Error).message);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-8">
-          <div className="flex justify-between items-center mb-4">
-            <h1 className="text-4xl font-bold text-gray-900">
-              🏢 NestJS Enterprise Test Dashboard
-            </h1>
-            <div className="space-x-4">
-              {isAuthenticated ? (
-                <>
-                  <Link href="/dashboard" className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
-                    Analytics Dashboard
-                  </Link>
-                  <button
-                    onClick={() => {
-                      apiClient.logout();
-                      setIsAuthenticated(false);
-                      window.location.reload();
-                    }}
-                    className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700"
-                  >
-                    Logout
-                  </button>
-                </>
-              ) : (
-                <>
-                  <Link href="/auth/login" className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
-                    Login
-                  </Link>
-                  <Link href="/auth/register" className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
-                    Register
-                  </Link>
-                </>
-              )}
-            </div>
-          </div>
-          <p className="text-gray-600">
-            Testing TypeScript, Prisma ORM, CQRS Pattern, Elasticsearch, NestJS Architecture
-          </p>
+    <div className="space-y-6">
+      <form onSubmit={search} className="flex flex-wrap gap-2">
+        <input aria-label="Search" className="flex-1 rounded border px-3 py-2" placeholder="Search posts (Elasticsearch, fuzzy)" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <select aria-label="Tag" className="rounded border px-3 py-2" value={tag} onChange={(e) => setTag(e.target.value)}>
+          <option value="">All tags</option>
+          {tags.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.posts})</option>)}
+        </select>
+        <button className="rounded bg-blue-600 px-4 py-2 text-white">Search</button>
+      </form>
+      {error && <p className="text-red-600">{error}</p>}
+      {live.length > 0 && (
+        <div className="rounded border border-green-300 bg-green-50 p-3 text-sm" data-testid="live">
+          <b>Live:</b> {live.join(' · ')}
         </div>
+      )}
 
-        {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-red-800">{error}</p>
-          </div>
-        )}
-
-        {/* Users CRUD (Prisma) */}
-        <div className="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-            👥 Users (Prisma ORM)
-          </h2>
-          <div className="flex gap-3 mb-4">
-            <button
-              onClick={createUser}
-              disabled={loading.createUser}
-              className="px-5 py-2.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading.createUser ? 'Creating...' : 'Create User'}
-            </button>
-            <button
-              onClick={fetchUsers}
-              disabled={loading.users}
-              className="px-5 py-2.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading.users ? 'Loading...' : 'Fetch Users'}
-            </button>
-          </div>
-          <div className="text-sm text-gray-600 mb-3">
-            Total Users: {users.length}
-          </div>
-          {users.length > 0 && (
-            <div className="max-h-64 overflow-auto space-y-2">
-              {users.map((user) => (
-                <div
-                  key={user.id}
-                  className="p-3 bg-white rounded-md border border-gray-200 text-sm"
-                >
-                  <span className="font-semibold">{user.name}</span> - {user.email}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* CQRS Pattern */}
-        <div className="mb-8 p-6 bg-green-50 rounded-lg border border-green-200">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-            ⚡ CQRS Pattern (Command-Query Separation)
-          </h2>
-          <button
-            onClick={createPost}
-            disabled={loading.cqrs}
-            className="px-5 py-2.5 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mb-4"
-          >
-            {loading.cqrs ? 'Creating...' : 'Create Post (Command)'}
-          </button>
-          {commandResult && (
-            <div className="p-4 bg-white rounded-md border border-gray-200 text-sm">
-              <div>
-                <strong>Title:</strong> {commandResult.title}
-              </div>
-              <div>
-                <strong>ID:</strong> {commandResult.id}
-              </div>
-              <div className="text-green-600 mt-2">
-                ✓ Command executed successfully
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Search */}
-        <div className="mb-8 p-6 bg-yellow-50 rounded-lg border border-yellow-200">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-            🔍 Full-Text Search
-          </h2>
-          <div className="mb-4 flex gap-3">
-            <input
-              type="text"
-              placeholder="Search posts..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter') searchPosts(searchQuery);
-              }}
-              className="px-4 py-2.5 w-80 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500"
-            />
-            <button
-              onClick={() => searchPosts(searchQuery)}
-              disabled={loading.search}
-              className="px-5 py-2.5 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading.search ? 'Searching...' : 'Search'}
-            </button>
-          </div>
-          {searchResults.length > 0 && (
-            <div className="max-h-64 overflow-auto space-y-2">
-              {searchResults.map((post) => (
-                <div
-                  key={post.id}
-                  className="p-3 bg-white rounded-md border border-gray-200 text-sm"
-                >
-                  <span className="font-semibold">{post.title}</span>
-                  <div className="text-gray-600 text-xs mt-1">{post.content}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* GraphQL */}
-        <div className="mb-8 p-6 bg-purple-50 rounded-lg border border-purple-200">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-            🔗 GraphQL API
-          </h2>
-          <div className="text-sm text-gray-600 space-y-3">
-            <p>
-              <strong>Access GraphQL Playground:</strong>
-            </p>
-            <a
-              href="http://localhost:6000/graphql"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block px-5 py-2.5 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors"
-            >
-              Open GraphQL Playground
-            </a>
-            <pre className="mt-4 p-4 bg-white rounded-md border border-gray-200 text-xs overflow-auto">
-              {`query {
-  users {
-    id
-    name
-    email
-    posts {
-      title
-      content
-    }
-  }
-}`}
-            </pre>
-          </div>
-        </div>
-
-        {/* NestJS Features */}
-        <div className="mb-8 p-6 bg-red-50 rounded-lg border border-red-200">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-            🚀 NestJS Features Implemented
-          </h2>
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            {[
-              'Dependency Injection',
-              'Modular Architecture',
-              'Guards & Interceptors',
-              'Pipes & Validation',
-              'Exception Filters',
-              'Middleware',
-              'Prisma ORM Integration',
-              'Full-Text Search',
-              'GraphQL with Apollo',
-              'CQRS Pattern',
-              'Event Sourcing',
-              'Auto-generated Documentation',
-            ].map((feature) => (
-              <div
-                key={feature}
-                className="p-3 bg-white rounded-md border border-gray-200"
-              >
-                ✅ {feature}
-              </div>
+      {results && (
+        <section>
+          <h2 className="mb-2 text-lg font-semibold">{results.total} results <span className="text-sm text-gray-500">({results.engine})</span></h2>
+          <ul className="space-y-2">
+            {results.results.map((r) => (
+              <li key={r.id} className="rounded border bg-white p-3">
+                <Link href={`/posts/${r.id}`} className="font-medium text-blue-700">{r.title}</Link>
+                {r.highlight?.content && <p className="text-sm text-gray-600" dangerouslySetInnerHTML={{ __html: r.highlight.content.join(' … ').replace(/<(?!\/?em>)[^>]*>/g, '') }} />}
+              </li>
             ))}
-          </div>
-        </div>
-
-        {/* Testing Guide */}
-        <div className="p-6 bg-gray-100 rounded-lg border border-gray-300">
-          <h3 className="text-xl font-semibold text-gray-900 mb-4">
-            📝 Testing Guide
-          </h3>
-          <ul className="text-sm text-gray-700 space-y-2">
-            <li>
-              <strong>Prisma:</strong> Type-safe database access with auto-generated
-              types
-            </li>
-            <li>
-              <strong>CQRS:</strong> Separate read and write operations for scalability
-            </li>
-            <li>
-              <strong>Search:</strong> Full-text search with fuzzy matching
-            </li>
-            <li>
-              <strong>GraphQL:</strong> Flexible querying with nested relations
-            </li>
-            <li>
-              <strong>TypeScript:</strong> Full type safety with decorators and metadata
-            </li>
           </ul>
-        </div>
-      </div>
+        </section>
+      )}
+
+      <section>
+        <h1 className="mb-3 text-xl font-semibold">Latest posts {feed?.cached && <span className="text-xs text-gray-400">(cached)</span>}</h1>
+        <ul className="space-y-3">
+          {feed?.data.map((p) => (
+            <li key={p.id} className="rounded border bg-white p-4" data-testid="post">
+              <Link href={`/posts/${p.id}`} className="text-lg font-medium text-blue-700">{p.title}</Link>
+              <p className="mt-1 line-clamp-2 text-gray-700">{p.content}</p>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
+                <span>by {p.author?.name}</span>
+                <span>{new Date(p.createdAt).toLocaleDateString()}</span>
+                <span>{p._count?.comments ?? 0} comments</span>
+                {p.tags.map((t) => <span key={t.name} className="rounded bg-gray-100 px-2">#{t.name}</span>)}
+              </div>
+            </li>
+          ))}
+        </ul>
+        {feed && feed.data.length === 0 && <p className="text-gray-500">No posts yet.</p>}
+      </section>
     </div>
   );
 }
